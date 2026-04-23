@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>像素跑酷</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #1a1a2e;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Press Start 2P', monospace;
+            overflow: hidden;
+        }
+        
+        #gameContainer {
+            position: relative;
+            border: 4px solid #e94560;
+            box-shadow: 0 0 30px rgba(233, 69, 96, 0.5);
+        }
+        
+        #gameCanvas {
+            display: block;
+            background: #16213e;
+        }
+        
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #0f3460;
+            font-size: 14px;
+            text-shadow: 2px 2px 0 #e94560;
+        }
+        
+        #score {
+            color: #e94560;
+            font-size: 20px;
+        }
+        
+        #startScreen, #gameOverScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(22, 33, 62, 0.9);
+            color: #e94560;
+        }
+        
+        #gameOverScreen {
+            display: none;
+        }
+        
+        h1 {
+            font-size: 28px;
+            margin-bottom: 20px;
+            text-shadow: 4px 4px 0 #0f3460;
+        }
+        
+        p {
+            font-size: 12px;
+            margin-bottom: 10px;
+            color: #533483;
+        }
+        
+        .blink {
+            animation: blink 1s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+        
+        #finalScore {
+            font-size: 16px;
+            color: #e94560;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="400"></canvas>
+        <div id="ui">
+            <div id="score">分数: 0</div>
+        </div>
+        <div id="startScreen">
+            <h1>像素跑酷</h1>
+            <p>按空格键开始游戏</p>
+            <p class="blink">按空格跳跃</p>
+        </div>
+        <div id="gameOverScreen">
+            <h1>游戏结束</h1>
+            <div id="finalScore">得分: 0</div>
+            <p class="blink">按空格重新开始</p>
+        </div>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const finalScoreEl = document.getElementById('finalScore');
+        
+        // 像素风调色板
+        const colors = {
+            player: '#e94560',
+            playerDark: '#b8354d',
+            ground: '#0f3460',
+            groundLight: '#533483',
+            obstacle: '#16213e',
+            obstacleLight: '#533483',
+            star: '#e94560'
+        };
+        
+        // 游戏状态
+        let gameState = 'start';
+        let score = 0;
+        let gameSpeed = 5;
+        let frameCount = 0;
+        
+        // 玩家
+        const player = {
+            x: 100,
+            y: 300,
+            width: 30,
+            height: 30,
+            velocityY: 0,
+            isJumping: false,
+            jumpPower: -15,
+            gravity: 0.8,
+            groundY: 320
+        };
+        
+        // 障碍物数组
+        let obstacles = [];
+        let stars = [];
+        
+        // 初始化星星背景
+        function initStars() {
+            stars = [];
+            for (let i = 0; i < 50; i++) {
+                stars.push({
+                    x: Math.random() * canvas.width,
+                    y: Math.random() * (canvas.height - 100),
+                    size: Math.random() * 2 + 1,
+                    speed: Math.random() * 0.5 + 0.2
+                });
+            }
+        }
+        
+        // 绘制像素方块玩家
+        function drawPlayer() {
+            ctx.fillStyle = colors.player;
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            
+            // 像素阴影效果
+            ctx.fillStyle = colors.playerDark;
+            ctx.fillRect(player.x + player.width - 6, player.y + 6, 6, player.height - 6);
+            ctx.fillRect(player.x + 6, player.y + player.height - 6, player.width - 6, 6);
+            
+            // 眼睛
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(player.x + 6, player.y + 8, 6, 6);
+            ctx.fillRect(player.x + 18, player.y + 8, 6, 6);
+            ctx.fillStyle = '#16213e';
+            ctx.fillRect(player.x + 8, player.y + 10, 2, 2);
+            ctx.fillRect(player.x + 20, player.y + 10, 2, 2);
+        }
+        
+        // 绘制地面
+        function drawGround() {
+            // 主地面
+            ctx.fillStyle = colors.ground;
+            ctx.fillRect(0, 340, canvas.width, 60);
+            
+            // 像素方块纹理
+            for (let i = 0; i < canvas.width; i += 20) {
+                ctx.fillStyle = colors.groundLight;
+                ctx.fillRect(i, 340, 10, 10);
+                ctx.fillRect(i + 10, 350, 10, 10);
+            }
+            
+            // 顶部高光线
+            ctx.fillStyle = colors.groundLight;
+            ctx.fillRect(0, 340, canvas.width, 4);
+        }
+        
+        // 绘制障碍物
+        function drawObstacles() {
+            obstacles.forEach(obs => {
+                // 主体
+                ctx.fillStyle = colors.obstacle;
+                ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+                
+                // 像素阴影
+                ctx.fillStyle = colors.obstacleLight;
+                ctx.fillRect(obs.x + obs.width - 4, obs.y + 4, 4, obs.height - 4);
+                ctx.fillRect(obs.x + 4, obs.y + obs.height - 4, obs.width - 4, 4);
+                
+                // 顶部装饰
+                ctx.fillStyle = colors.obstacleLight;
+                ctx.fillRect(obs.x + 4, obs.y + 4, obs.width - 8, 6);
+            });
+        }
+        
+        // 绘制星星背景
+        function drawStars() {
+            stars.forEach(star => {
+                ctx.fillStyle = colors.star;
+                ctx.globalAlpha = 0.5 + Math.sin(frameCount * 0.05 + star.x) * 0.3;
+                ctx.fillRect(star.x, star.y, star.size, star.size);
+            });
+            ctx.globalAlpha = 1;
+        }
+        
+        // 更新星星
+        function updateStars() {
+            stars.forEach(star => {
+                star.x -= star.speed;
+                if (star.x < -10) {
+                    star.x = canvas.width + 10;
+                    star.y = Math.random() * (canvas.height - 100);
+                }
+            });
+        }
+        
+        // 生成障碍物
+        function spawnObstacle() {
+            const height = Math.random() * 40 + 30;
+            const width = Math.random() * 20 + 25;
+            obstacles.push({
+                x: canvas.width,
+                y: 340 - height,
+                width: width,
+                height: height
+            });
+        }
+        
+        // 更新障碍物
+        function updateObstacles() {
+            // 随机生成障碍物
+            if (frameCount % Math.floor(120 - gameSpeed * 5) === 0) {
+                if (Math.random() > 0.3) {
+                    spawnObstacle();
+                }
+            }
+            
+            // 移动障碍物
+            obstacles.forEach((obs, index) => {
+                obs.x -= gameSpeed;
+                if (obs.x + obs.width < 0) {
+                    obstacles.splice(index, 1);
+                }
+            });
+            
+            // 碰撞检测
+            obstacles.forEach(obs => {
+                if (player.x < obs.x + obs.width &&
+                    player.x + player.width > obs.x &&
+                    player.y < obs.y + obs.height &&
+                    player.y + player.height > obs.y) {
+                    gameOver();
+                }
+            });
+        }
+        
+        // 更新玩家
+        function updatePlayer() {
+            player.velocityY += player.gravity;
+            player.y += player.velocityY;
+            
+            // 地面检测
+            if (player.y >= player.groundY) {
+                player.y = player.groundY;
+                player.velocityY = 0;
+                player.isJumping = false;
+            }
+            
+            // 跳跃
+            if (player.isJumping && player.velocityY < 0) {
+                player.y += player.velocityY;
+            }
+        }
+        
+        // 跳跃
+        function jump() {
+            if (!player.isJumping) {
+                player.velocityY = player.jumpPower;
+                player.isJumping = true;
+            }
+        }
+        
+        // 开始游戏
+        function startGame() {
+            gameState = 'playing';
+            score = 0;
+            gameSpeed = 5;
+            frameCount = 0;
+            obstacles = [];
+            player.y = player.groundY;
+            player.velocityY = 0;
+            player.isJumping = false;
+            startScreen.style.display = 'none';
+            gameOverScreen.style.display = 'none';
+            initStars();
+            gameLoop();
+        }
+        
+        // 游戏结束
+        function gameOver() {
+            gameState = 'gameOver';
+            finalScoreEl.textContent = `得分: ${score}`;
+            gameOverScreen.style.display = 'flex';
+        }
+        
+        // 游戏循环
+        function gameLoop() {
+            if (gameState !== 'playing') return;
+            
+            frameCount++;
+            
+            // 增加分数
+            if (frameCount % 10 === 0) {
+                score++;
+                scoreEl.textContent = `分数: ${score}`;
+            }
+            
+            // 逐渐加速
+            if (frameCount % 500 === 0) {
+                gameSpeed += 0.5;
+            }
+            
+            // 清空画布
+            ctx.fillStyle = '#16213e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // 更新
+            updateStars();
+            updatePlayer();
+            updateObstacles();
+            
+            // 绘制
+            drawStars();
+            drawGround();
+            drawObstacles();
+            drawPlayer();
+            
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // 键盘事件
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                if (gameState === 'start') {
+                    startGame();
+                } else if (gameState === 'playing') {
+                    jump();
+                } else if (gameState === 'gameOver') {
+                    startGame();
+                }
+            }
+        });
+        
+        // 触摸事件（移动端支持）
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (gameState === 'start') {
+                startGame();
+            } else if (gameState === 'playing') {
+                jump();
+            } else if (gameState === 'gameOver') {
+                startGame();
+            }
+        });
+        
+        // 初始化
+        initStars();
+        
+        // 绘制初始画面
+        ctx.fillStyle = '#16213e';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        drawStars();
+        drawGround();
+        
+        // 绘制静态玩家
+        player.y = player.groundY;
+        drawPlayer();
+    </script>
+</body>
+</html>
