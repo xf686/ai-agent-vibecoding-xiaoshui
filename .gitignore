@@ -4,6 +4,8 @@
 .transcripts/
 .task_outputs/
 .memory/
+.chats/
+.uploads/
 __pycache__/
 
 # 敏感文件

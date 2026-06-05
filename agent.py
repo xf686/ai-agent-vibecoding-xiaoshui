@@ -653,6 +653,7 @@ SYSTEM = f"""你是「小水」，一个强大的个人编程助手。
 - 短任务用 TodoWrite 跟踪
 - 需要调研或隔离执行时用 task 派子 agent
 - 需要专业知识时用 load_skill
+- 用户可能是编程新手:遇到报错(执行结果出错、或用户贴来一段看不懂的报错)时,自动用人话翻译,先安抚再给一个明确下一步,并主动提出帮 ta 改,别堆术语
 
 可用技能: {SKILLS.descriptions()}"""
 
@@ -752,8 +753,38 @@ TOOLS = [
 
 
 # === SECTION: agent_loop ===
+# === SECTION: error_autodetect ===
+# 「报错报警器」: 跑完命令后,闻一闻结果里有没有报错的糊味。
+# 一旦命中,就在小水回话前把「报错翻译官」技能拍到它面前(见 agent_loop)。
+ERROR_SIGNS = (
+    "Traceback (most recent call", "command not found",
+    "SyntaxError", "IndentationError", "NameError", "TypeError",
+    "ImportError", "ModuleNotFoundError", "AttributeError", "ValueError",
+    "KeyError", "FileNotFoundError", "No such file or directory",
+    "Permission denied", "Address already in use", "fatal:", "npm ERR!",
+)
+
+
+def looks_like_error(text) -> bool:
+    return any(sign in str(text) for sign in ERROR_SIGNS)
+
+
 def agent_loop(messages: list):
     rounds_without_todo = 0
+    error_skill_injected = False
+    # s_err: 用户「打字贴进来」的报错也要触发翻译官(报警器的另一只鼻子,开局先闻一次)
+    if messages and messages[-1].get("role") == "user" and isinstance(messages[-1].get("content"), str):
+        if looks_like_error(messages[-1]["content"]):
+            _skill = SKILLS.load("error-translator")
+            if not _skill.startswith("Error"):
+                messages[-1]["content"] += (
+                    "\n\n<auto-skill name=\"error-translator\">\n"
+                    "用户贴来一段报错,可能是编程新手。请用「报错翻译官」方式回应:先安抚、把报错翻成人话、"
+                    "给一个明确下一步并主动提出帮 ta 改。即使你动手验证后发现真实情况和报错不符(比如包其实装了),"
+                    "也要继续用人话解释和排查,绝不要直接抛出 PyCharm/VSCode/解释器/环境变量 这类术语而不解释——"
+                    "要么翻译成大白话,要么先问 ta 一个 ta 能听懂的问题。\n\n"
+                    f"{_skill}\n</auto-skill>")
+                error_skill_injected = True
     while True:
         # s06: compression pipeline
         microcompact(messages)
@@ -804,6 +835,18 @@ def agent_loop(messages: list):
         rounds_without_todo = 0 if used_todo else rounds_without_todo + 1
         if TODO.has_open_items() and rounds_without_todo >= 3:
             results.insert(0, {"type": "text", "text": "<reminder>Update your todos.</reminder>"})
+        # s_err: 报错报警器 —— 一闻到糊味就给小水戴上「报错翻译官」帽子(每个用户回合最多触发一次)
+        if not error_skill_injected and any(
+            r.get("type") == "tool_result" and looks_like_error(r.get("content", "")) for r in results
+        ):
+            skill_body = SKILLS.load("error-translator")
+            if not skill_body.startswith("Error"):
+                results.insert(0, {"type": "text", "text":
+                    "<auto-skill name=\"error-translator\">\n"
+                    "刚才的执行结果里出现了报错。用户可能是编程新手,请立刻改用下面这套"
+                    "「报错翻译官」的方式回应——先安抚、把报错翻成人话、给一个明确下一步并主动提出帮 ta 改,不要堆术语:\n\n"
+                    f"{skill_body}\n</auto-skill>"})
+                error_skill_injected = True
         messages.append({"role": "user", "content": results})
         # s06: manual compress
         if manual_compress:

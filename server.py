@@ -16,12 +16,16 @@ sys.path.insert(0, str(APP_DIR))
 
 import agent
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse
 
 # ── Chat history storage ─────────────────────────────────────────
 CHATS_DIR = APP_DIR / ".chats"
 CHATS_DIR.mkdir(exist_ok=True)
+
+# ── File upload storage ─────────────────────────────────────────
+UPLOADS_DIR = APP_DIR / ".uploads"
+UPLOADS_DIR.mkdir(exist_ok=True)
 
 sessions: dict[str, list] = {}  # sid -> messages
 chat_meta: dict[str, dict] = {}  # sid -> {title, created_at, updated_at}
@@ -230,6 +234,40 @@ async def api_delete(req: Request):
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/upload")
+async def api_upload(req: Request):
+    """Upload a file."""
+    try:
+        form = await req.form()
+        file = form.get("file")
+        if not file:
+            return JSONResponse({"error": "请选择文件"}, status_code=400)
+        
+        filename = file.filename
+        if not filename:
+            return JSONResponse({"error": "文件名不能为空"}, status_code=400)
+        
+        # 安全检查：防止路径穿越
+        filename = Path(filename).name
+        save_path = UPLOADS_DIR / filename
+        
+        # 如果文件已存在，加时间戳区分
+        if save_path.exists():
+            stem = save_path.stem
+            suffix = save_path.suffix
+            save_path = UPLOADS_DIR / f"{stem}_{int(time.time())}{suffix}"
+        
+        # 读取并保存
+        content = await file.read()
+        if len(content) > 100 * 1024 * 1024:  # 100MB 限制
+            return JSONResponse({"error": "文件大小不能超过 100MB"}, status_code=400)
+        
+        save_path.write_bytes(content)
+        return JSONResponse({"ok": True, "filename": save_path.name, "size": len(content)})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # Load existing chats on startup
 _load_all_chats()
 
@@ -384,6 +422,10 @@ header{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);displa
     </div>
     <div class="iw"><div class="ib">
       <input id="inp" placeholder="跟小水说..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();go()}">
+      <label class="sb-btn" style="background:var(--s2);margin-right:4px" title="上传文件">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <input type="file" id="upl" style="display:none" onchange="upload(this.files)">
+      </label>
       <button class="sb-btn" id="btn" onclick="go()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
     </div></div>
   </div></div>
