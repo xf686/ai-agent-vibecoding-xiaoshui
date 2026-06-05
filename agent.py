@@ -58,6 +58,7 @@ TEAM_DIR = WORKDIR / ".team"
 INBOX_DIR = TEAM_DIR / "inbox"
 TASKS_DIR = WORKDIR / ".tasks"
 SKILLS_DIR = WORKDIR / "skills"
+AGENTS_DIR = WORKDIR / "agents"
 TRANSCRIPT_DIR = WORKDIR / ".transcripts"
 TOKEN_THRESHOLD = 100000
 POLL_INTERVAL = 5
@@ -225,7 +226,10 @@ def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
         {"name": "read_file", "description": "Read file.",
          "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
     ]
-    if agent_type != "Explore":
+    # 带人设的自定义 subagent(来自 agents/ 目录):用它的正文当系统提示,并放开写文件权限
+    custom = AGENTS.get(agent_type) if "AGENTS" in globals() else None
+    sub_system = custom["body"] if custom else None
+    if custom or agent_type != "Explore":
         sub_tools += [
             {"name": "write_file", "description": "Write file.",
              "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
@@ -241,7 +245,10 @@ def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
     sub_msgs = [{"role": "user", "content": prompt}]
     resp = None
     for _ in range(30):
-        resp = client.messages.create(model=MODEL, messages=sub_msgs, tools=sub_tools, max_tokens=8000)
+        if sub_system:
+            resp = client.messages.create(model=MODEL, system=sub_system, messages=sub_msgs, tools=sub_tools, max_tokens=8000)
+        else:
+            resp = client.messages.create(model=MODEL, messages=sub_msgs, tools=sub_tools, max_tokens=8000)
         sub_msgs.append({"role": "assistant", "content": resp.content})
         if resp.stop_reason != "tool_use":
             break
@@ -282,6 +289,38 @@ class SkillLoader:
         s = self.skills.get(name)
         if not s: return f"Error: Unknown skill '{name}'. Available: {', '.join(self.skills.keys())}"
         return f"<skill name=\"{name}\">\n{s['body']}\n</skill>"
+
+
+# === SECTION: subagent_registry (s05b) ===
+class AgentLoader:
+    """读取 agents/ 目录下的子 agent 定义(markdown + frontmatter)。
+    格式兼容社区 .claude/agents/*.md:开头 ---name/description--- ,正文是该 agent 的系统提示(人设)。
+    以后从 GitHub 搬新 agent,只要把 .md 丢进 agents/ 即可。"""
+    def __init__(self, agents_dir: Path):
+        self.agents = {}
+        if agents_dir.exists():
+            for f in sorted(agents_dir.glob("*.md")):
+                text = f.read_text()
+                match = re.match(r"^---\n(.*?)\n---\n(.*)", text, re.DOTALL)
+                meta, body = {}, text
+                if match:
+                    for line in match.group(1).strip().splitlines():
+                        if ":" in line:
+                            k, v = line.split(":", 1)
+                            meta[k.strip()] = v.strip()
+                    body = match.group(2).strip()
+                name = meta.get("name", f.stem)
+                self.agents[name] = {"meta": meta, "body": body}
+
+    def descriptions(self) -> str:
+        if not self.agents: return "(无自定义子 agent)"
+        return "\n".join(f"  - {n}: {a['meta'].get('description', '-')}" for n, a in self.agents.items())
+
+    def get(self, name: str):
+        return self.agents.get(name)
+
+    def names(self) -> list:
+        return list(self.agents.keys())
 
 
 # === SECTION: compression (s06) ===
@@ -636,6 +675,7 @@ class TeammateManager:
 # === SECTION: global_instances ===
 TODO = TodoManager()
 SKILLS = SkillLoader(SKILLS_DIR)
+AGENTS = AgentLoader(AGENTS_DIR)
 TASK_MGR = TaskManager()
 BG = BackgroundManager()
 BUS = MessageBus()
@@ -654,6 +694,9 @@ SYSTEM = f"""你是「小水」，一个强大的个人编程助手。
 - 需要调研或隔离执行时用 task 派子 agent
 - 需要专业知识时用 load_skill
 - 用户可能是编程新手:遇到报错(执行结果出错、或用户贴来一段看不懂的报错)时,自动用人话翻译,先安抚再给一个明确下一步,并主动提出帮 ta 改,别堆术语
+
+可派的子 agent(用 task,把 agent_type 设成下面的名字,即可派出带专属人设的助手):
+{AGENTS.descriptions()}
 
 可用技能: {SKILLS.descriptions()}"""
 
@@ -713,8 +756,8 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
     {"name": "TodoWrite", "description": "Update task tracking list.",
      "input_schema": {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}, "activeForm": {"type": "string"}}, "required": ["content", "status", "activeForm"]}}}, "required": ["items"]}},
-    {"name": "task", "description": "Spawn a subagent for isolated exploration or work.",
-     "input_schema": {"type": "object", "properties": {"prompt": {"type": "string"}, "agent_type": {"type": "string", "enum": ["Explore", "general-purpose"]}}, "required": ["prompt"]}},
+    {"name": "task", "description": "派一个子 agent 去隔离地干活。agent_type 可填:Explore(只读探索)、general-purpose(可读写通用),或系统提示「可派的子 agent」里列出的某个带专属人设的 agent 名字。",
+     "input_schema": {"type": "object", "properties": {"prompt": {"type": "string"}, "agent_type": {"type": "string", "enum": ["Explore", "general-purpose"] + AGENTS.names()}}, "required": ["prompt"]}},
     {"name": "load_skill", "description": "Load specialized knowledge by name.",
      "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
     {"name": "compress", "description": "Manually compress conversation context.",
